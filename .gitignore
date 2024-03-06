@@ -4,3 +4,10 @@
 *.ptx
 *.cubin
 *.fatbin
+/Debug/
+
+#eclispse
+.project
+.cproject
+/.settings/
+/.metadata/
