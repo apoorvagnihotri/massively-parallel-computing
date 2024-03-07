@@ -12,7 +12,7 @@ find_package(CUDA REQUIRED 11.2)
 # 7.0 - V100
 # 7.5 - 2080Ti
 # 8.6 - 3090
-set(CMAKE_CUDA_ARCHITECTURES 61 75)
+set(CMAKE_CUDA_ARCHITECTURES 89)
 
 include_directories(${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
 
@@ -30,5 +30,5 @@ endif()
 message("CMAKE_CUDA_ARCHITECTURES: ${CMAKE_CUDA_ARCHITECTURES}")
 message("CMAKE_CUDA_FLAGS: ${CMAKE_CUDA_FLAGS}")
 
-add_executable(testGamma testGamma.cu PPM.cpp)
+add_executable(testGamma testGamma.cu PPM.cpp) 
 add_executable(subtractImage subtractImage.cu PPM.cpp)
