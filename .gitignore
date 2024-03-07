@@ -9,8 +9,8 @@
 #eclispse
 .project
 .cproject
-/.settings/
-/.metadata/
+**/.settings/
+**/.metadata/
 **/.vs/
 **/build/
 
