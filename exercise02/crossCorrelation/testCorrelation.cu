@@ -15,6 +15,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <cuda_runtime.h>
+#include <cuda_runtime_api.h>
+#include <vector_types.h>
+#include <device_launch_parameters.h>
+#include <cuda_texture_types.h>
 
 #include "PPM.hh"
 
@@ -60,8 +64,14 @@ __global__ void correlationKernel(float3* _dst, cudaTextureObject_t texImg1,
             // Add the componentwise product of them to res
             // Attention: Texture access is done via tex2D. Use normalized coordinates!
 
-            // example for fetching the texture value at the image center
-            float4 color = tex2D<float4>(texImg1, 0.5f, 0.5f);
+            // Fetch the pixel from image 1 and the offset pixel from image 2
+            float4 color1 = tex2D<float4>(texImg1, i / float(_w), j / float(_h));
+            float4 color2 = tex2D<float4>(texImg2, (i + offsX) / float(_w), (j + offsY) / float(_h));
+
+            // Add the component-wise product of them to res (note the color2.x, color2.y, color2.z access)
+            res.x += color1.x * color2.x;
+            res.y += color1.y * color2.y;
+            res.z += color1.z * color2.z;
         }
     }
 
@@ -186,8 +196,21 @@ int main(int argc, char* argv[])
     cudaArray_t gpuTex1;
     cudaArray_t gpuTex2;
 
-    // !!! missing !!!
     // Create arrays and upload the padded texture data
+    cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc<float4>();
+    cudaMallocArray(&gpuTex1, &channelDesc, w, h);
+    cudaMallocArray(&gpuTex2, &channelDesc, w, h);
+
+    // Set pitch of the source (the width in memory in bytes of the 
+    // 2D array pointed to by src, including padding)
+    // we dont have any padding
+    const size_t spitch = w * sizeof(float4);
+    // Copy data located at address img3 adn img4 in host 
+    // memory to device memory
+    cudaMemcpy2DToArray(gpuTex1, 0, 0, img3, spitch,
+        w * sizeof(float4), h, cudaMemcpyHostToDevice);
+    cudaMemcpy2DToArray(gpuTex1, 0, 0, img3, spitch,
+        w * sizeof(float4), h, cudaMemcpyHostToDevice);
 
     cudaTextureDesc texDesc;
     memset(&texDesc, 0, sizeof(texDesc));
@@ -236,7 +259,10 @@ int main(int argc, char* argv[])
     cudaFree(gpuResImg);
 
     // !!! missing !!!
-    // Free the arrays
+    // Free the arrays  
+    // Clean up (after cudaDestroyTextureObject calls)
+    cudaFreeArray(gpuTex1);
+    cudaFreeArray(gpuTex2);
 
 
     delete[] img1;
