@@ -39,6 +39,7 @@
 #include <cstdlib>
 
 #include <cuda_runtime.h>
+#include <device_launch_parameters.h>
 
 using namespace std;
 
@@ -48,8 +49,11 @@ void checkCUDAError(const char* msg);
 // Part 2 of 2: implement the kernel
 __global__ void reverseArrayBlock(int* dst, int* src)
 {
-    // !!! missing !!!
-    // Move data in reversed order from one array to another.
+    // will be using the global memory to access the opposite elements of the two arrays
+    // since we have a array that is cleanly divisble by the block size, we don't need to worry about the edge cases
+    unsigned int srcIdx = blockDim.x * blockIdx.x + threadIdx.x;
+    unsigned int dstIdx = gridDim.x * blockDim.x - 1 - srcIdx;
+    dst[dstIdx] = src[srcIdx];
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -69,8 +73,8 @@ int main(int argc, char** argv)
 
     // Part 1 of 2: compute number of blocks needed based on array size and desired block size
     int numBlocks;
-    // !!! missing !!!
-    // Compute the number of blocks needed.
+    // we need only dimA threads to reverse the array, each thread picks up a location and fills the opposite location.
+    numBlocks = dimA / numThreadsPerBlock;
 
     // allocate host and device memory
     size_t memSize = numBlocks * numThreadsPerBlock * sizeof(int);
@@ -95,15 +99,17 @@ int main(int argc, char** argv)
     // device to host copy
     cudaMemcpy(h_a, d_b, memSize, cudaMemcpyDeviceToHost);
 
+
+    // free device memory
+    cudaFree(d_a);
+    cudaFree(d_b);
+
     // verify the data returned to the host is correct
     for (int i = 0; i < dimA; i++)
     {
         assert(h_a[i] == dimA - 1 - i);
     }
 
-    // free device memory
-    cudaFree(d_a);
-    cudaFree(d_b);
 
     // free host memory
     free(h_a);
