@@ -14,6 +14,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cuda_runtime.h>
+#include <device_launch_parameters.h>
+
 
 #include "PPM.hh"
 
@@ -32,7 +34,7 @@ __device__ __constant__ float gpuGamma[1];
 
 __device__ float applyGamma(const float& _src, const float _gamma)
 {
-    return 255.0f * __powf(_src / 255.0f, _gamma);
+    return 255.0f * powf(_src / 255.0f, _gamma);
 }
 
 /* compute gamma correction on the float image _src of resolution dim,
