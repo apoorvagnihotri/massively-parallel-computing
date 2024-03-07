@@ -11,4 +11,6 @@
 .cproject
 /.settings/
 /.metadata/
+**/.vs/
 **/build/
+
