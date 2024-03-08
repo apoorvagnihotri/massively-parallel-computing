@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cuda_runtime.h>
+#include "device_launch_parameters.h"
 
 using namespace std;
 
@@ -34,7 +35,17 @@ __global__ void dotProdKernel(float* _dst, const float* _a1, const float* _a2, i
 {
 
     // program your kernel here
-    //!!!!!!!!! missing  !!!!!!!!!!!!!!!!!!!!!!!!
+    int x = blockIdx.x * MAX_THREADS + threadIdx.x;
+
+    
+    if (x < _dim)
+    {
+        float res = 0.;
+        for (int j = x; j < _dim; j +=(MAX_THREADS * MAX_BLOCKS)) {
+            res += _a1[j] * _a2[j];
+        }
+        _dst[x] = res;
+    }
 }
 
 /* This program sets up two large arrays of size dim and computes the
@@ -47,19 +58,20 @@ int main(int argc, char* argv[])
 {
     // parse command line
     int acount = 1;
-
+    
     if (argc < 3)
     {
         printf("usage: testDotProduct <dim> <GPU-flag [0,1]>\n");
         exit(1);
     }
-
+    
     // number of elements in both vectors
     int dim = atoi(argv[acount++]);
-
+    
     // flag indicating weather the CPU or the GPU version should be executed
     bool gpuVersion = atoi(argv[acount++]);
-
+    //int dim = 1000000;
+    //bool gpuVersion = true;
     printf("dim: %d\n", dim);
 
     float* cpuArray1 = new float[dim];
@@ -69,8 +81,8 @@ int main(int argc, char* argv[])
     for (int i = 0; i < dim; ++i)
     {
 #ifdef RTEST
-        cpuArray1[i] = drand48();
-        cpuArray2[i] = drand48();
+        cpuArray1[i] = rand() / (RAND_MAX + 1.0);
+        cpuArray2[i] = rand() / (RAND_MAX + 1.0);
 #else
         cpuArray1[i] = 2.0;
         cpuArray2[i] = i % 10;
@@ -86,12 +98,16 @@ int main(int argc, char* argv[])
 
     if (gpuVersion)
     {
-        // allocate two gpuArray 1 and gpuArray 2 and gpuResult array on GPU
 
+        // allocate two gpuArray 1 and gpuArray 2 and gpuResult array on GPU
+    	cudaMalloc((void**)&gpuArray1, dim * sizeof(float));
+		cudaMalloc((void**)&gpuArray2, dim * sizeof(float));
+        cudaMalloc((void**)&gpuResult, MAX_BLOCKS * MAX_THREADS * sizeof(float));
         //!!!!!!!!! missing  !!!!!!!!!!!!!!!!!!!!!!!!
 
         // copy the array once to the device
-
+		cudaMemcpy(gpuArray1, cpuArray1, dim * sizeof(float), cudaMemcpyHostToDevice);
+		cudaMemcpy(gpuArray2, cpuArray2, dim * sizeof(float), cudaMemcpyHostToDevice);
         //!!!!!!!!! missing  !!!!!!!!!!!!!!!!!!!!!!!!
 
         // allocate an array to download the results of all threads
@@ -129,6 +145,16 @@ int main(int argc, char* argv[])
         }
 
         // download and combine the results of multiple threads on the CPU
+        //cudaDeviceSynchronize();
+        cudaMemcpy(h, gpuResult, MAX_BLOCKS * MAX_THREADS * sizeof(float), cudaMemcpyDeviceToHost);
+        for (int iter = 0; iter < MAX_BLOCKS * MAX_THREADS; ++iter)
+        {
+            finalDotProduct = 0.0;
+            for (int i = 0; i < MAX_BLOCKS * MAX_THREADS; ++i)
+            {
+                finalDotProduct += h[i];
+            }
+        }
 
         //!!!!!!!!! missing  !!!!!!!!!!!!!!!!!!!!!!!!
     }
@@ -141,6 +167,9 @@ int main(int argc, char* argv[])
         // cleanup GPU memory
 
         //!!!!!!!!! missing  !!!!!!!!!!!!!!!!!!!!!!!!
+        cudaFree(gpuArray1);
+        cudaFree(gpuArray2);
+        cudaFree(gpuResult);
 
         delete[] h;
     }
