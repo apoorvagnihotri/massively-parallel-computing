@@ -26,8 +26,8 @@ using namespace std;
 // Simple utility function to check for CUDA runtime errors
 void checkCUDAError(const char* msg);
 
-#define MAX_BLOCKS 10
-#define MAX_THREADS 10
+#define MAX_BLOCKS 256
+#define MAX_THREADS 256
 
 inline __int64_t continuousTimeNs()
 {
@@ -83,51 +83,73 @@ __global__ void reductionKernel(float* dst, const float* a, int dim)
     
     // Number of the current thread
     unsigned int threadNo = blockDim.x * blockIdx.x + threadIdx.x;
+    unsigned int blockThreadNo = gridDim.x * threadIdx.x + blockIdx.x;
+
     // Number of all threads
     unsigned int threadSize = gridDim.x * blockDim.x;
 
     // load a into shared memory
-    for (int i = threadNo; i < dim; i += threadSize) {
-        partialSum[i] = a[i];
-        printf("threadNo: %d, i: %d, %f\n", threadNo, i,partialSum[i]);
+    for (int i = 0; i* threadSize + blockThreadNo < dim; i++) {
+        partialSum[i*blockDim.x + threadIdx.x] = a[i* threadSize + blockThreadNo];
     }
 
     // make sure all threads have written their parts
     __syncthreads();
 
     
-
-    int firstStride = blockDim.x;
-    while (firstStride * 2 <= dim)
+    unsigned int firstStride = 1;
+    int miniDim = dim/gridDim.x + 1;
+    while (firstStride * 2 <= miniDim)
     {
-        firstStride *= 2;
+    	firstStride *= 2;
+    }
+    for (unsigned int stride = firstStride; stride >= 1; stride >>= 1)
+    {
+    	__syncthreads();
+    	for (int t = threadIdx.x; t < stride; t += blockDim.x)
+    	{
+    		if ( t + stride < miniDim && t + stride < dim)
+        	{
+        		partialSum[t] += partialSum[t+stride];
+        	}
+    	}
+
+
     }
 
-    for (unsigned int stride = firstStride; stride >= blockDim.x; stride >>= 1)
-    {
-        __syncthreads();
-        int startPos = stride * threadIdx.x + blockIdx.x;
 
-        for (int t = 0; t < stride; t += gridDim.x)
-        {
-            if (startPos + t < dim && startPos + t + stride < dim)
-            {
-
-                printf("block: %d, thread: %d, stride: %d, startPos: %d, t: %d, %f + %f\n", blockIdx.x, threadIdx.x, stride, startPos, t, partialSum[startPos + t], partialSum[startPos + t + stride]);
-
-                partialSum[startPos + t] += partialSum[startPos + t + stride];
-            }
-            
-        }
-            
-    }
+    //int firstStride = blockDim.x;
+    //while (firstStride * 2 <= dim)
+    //{
+    //    firstStride *= 2;
+    //}
+    //
+    //for (unsigned int stride = firstStride; stride >= blockDim.x; stride >>= 1)
+    //{
+    //    __syncthreads();
+    //    int startPos = threadNo;
+    //
+    //  for (int t = threadNo; t < stride; t += threadSize)
+    //  {
+    //  	printf("threadNo: %d, t: %d, stride: %d\n", threadNo, t, stride);
+    //      if (t < dim && t+ stride < dim)
+    //      {
+    //
+    //          printf("block: %d, thread: %d, stride: %d, startPos: %d, t: %d, %f + %f\n", blockIdx.x, threadIdx.x, stride, startPos, t, partialSum[t], partialSum[t + stride]);
+    //
+    //          partialSum[t] += partialSum[t + stride];
+    //      }
+    //
+    //  }
+    //
+    //}
 
     __syncthreads();
 
     if (threadIdx.x == 0)
     {
-        dst[blockIdx.x] = partialSum[blockIdx.x];
-        printf("%f ", partialSum[blockIdx.x]);
+        dst[blockIdx.x] = partialSum[0];
+        //printf("%f ", dst[blockIdx.x]);
     }
     
 
@@ -241,8 +263,7 @@ int main(int argc, char* argv[])
             // call the dot kernel, store result in gpuResult1
             dotProdKernel<<<blockGrid, threadBlock>>>(gpuResult1, gpuArray1, gpuArray2, dim);
             expectedResultSize = min(dim, MAX_THREADS * MAX_BLOCKS);
-            cudaMemcpy(cpuResult, gpuResult1, expectedResultSize * sizeof(float),
-                                   cudaMemcpyDeviceToHost);
+            //cudaMemcpy(cpuResult, gpuResult1, expectedResultSize * sizeof(float),  cudaMemcpyDeviceToHost);
 
 
 
@@ -254,15 +275,17 @@ int main(int argc, char* argv[])
             // Reduce all the dot product summands to one single value,
             // download it to a float and use it to set finalDotProduct.
             cudaDeviceSynchronize();
-            reductionKernel << <blockGrid, threadBlock, dim * sizeof(float) >> > (gpuResult2, gpuResult1, dim);
+            reductionKernel << <blockGrid, threadBlock, ((expectedResultSize/MAX_BLOCKS) + 1) * sizeof(float) >> > (gpuResult2, gpuResult1, expectedResultSize);
             {
                 cudaError_t cudaerr = cudaDeviceSynchronize();
                 if (cudaerr != cudaSuccess)
                     printf("kernel launch failed with error \"%s\".\n",
                            cudaGetErrorString(cudaerr));
             }
-            reductionKernel << <1, threadBlock, dim * sizeof(float) >> > (gpuResult1, gpuResult2, MAX_BLOCKS);
+            reductionKernel << <dim3(1), threadBlock, MAX_BLOCKS * sizeof(float) >> > (gpuResult1, gpuResult2, MAX_BLOCKS);
+            cudaDeviceSynchronize();
             cudaMemcpy(cpuResult, gpuResult1, 1 * sizeof(float), cudaMemcpyDeviceToHost);
+            finalDotProduct = (double)*cpuResult;
             break;
 
         } // end switch
