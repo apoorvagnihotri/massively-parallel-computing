@@ -72,15 +72,12 @@ int main(int argc, char* argv[])
         printf("usage: testDotProductStreams <dim> <copy mode [0,1,2]>\n");
         exit(1);
     }
-    
+
     // number of elements in both vectors
     int dim = atoi(argv[acount++]);
-    
+
     // mode of the memory upload
     int mode = atoi(argv[acount++]);
-
-    //int dim = 100000;
-    //int mode = 2;
 
     printf("dim: %d\n", dim);
 
@@ -98,12 +95,11 @@ int main(int argc, char* argv[])
         }
         else // non-pageable memory
         {
-            // !!! missing !!!
+            // !!!missing!!!
             // Allocate non-pageable memory
-            cudaMallocHost((void**)&cpuOperator1[pass], dim * sizeof(float));
+            cudaMallocHost((void**)&cpuOperator1[pass], dim * sizeof(float)); // not needed but still
             cudaMallocHost((void**)&cpuOperator2[pass], dim * sizeof(float));
             cudaMallocHost((void**)&cpuResult[pass], MAX_THREADS * MAX_BLOCKS * sizeof(float));
-            //cudaMemcpy(devData, hostData, size, cudaMemcpyHostToDevice);
         }
     }
 
@@ -136,15 +132,18 @@ int main(int argc, char* argv[])
 
     // create two streams for the last mode
     cudaStream_t stream[2];
+    // !!! missing !!!
+    // Create two streams
     cudaStreamCreate(&(stream[0]));
-    cudaStreamCreate(&(stream[1]));
-    
+	cudaStreamCreate(&(stream[1]));
 
     // copy array 1 once to the device (will be static during all iterations)
-    cudaMemcpy(gpuOperator1[0], cpuOperator1[0], dim * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(gpuOperator1[1], cpuOperator1[1], dim * sizeof(float), cudaMemcpyHostToDevice);
+    for (unsigned int pass = 0; pass < 2; pass++)
+    {
+        cudaMemcpy(gpuOperator1[pass], cpuOperator1[pass], dim * sizeof(float), cudaMemcpyHostToDevice);
+    }
 
-    // 100 Iterations for better benchmarking
+    // 100 Iterations for better benchmarking, we push the second array to the GPU during benchmarking
     for (int iter = 0; iter < 100; ++iter)
     {
         // Two calculations of dot products per iteration to see the advantage of streams.
@@ -164,15 +163,15 @@ int main(int argc, char* argv[])
             for (unsigned int pass = 0; pass < 2; pass++)
             {
                 cudaMemcpy(gpuOperator2[pass], cpuOperator2[pass], dim * sizeof(float),
-                           cudaMemcpyHostToDevice);
+                    cudaMemcpyHostToDevice);
 
                 // call the kernel
                 dotProdKernel<<<blockGrid, threadBlock>>>(gpuResult[pass], gpuOperator1[pass],
-                                                          gpuOperator2[pass], dim);
+                    gpuOperator2[pass], dim);
 
                 // download and combine the results of multiple threads
                 cudaMemcpy(cpuResult[pass], gpuResult[pass],
-                           MAX_BLOCKS * MAX_THREADS * sizeof(float), cudaMemcpyDeviceToHost);
+                    MAX_BLOCKS * MAX_THREADS * sizeof(float), cudaMemcpyDeviceToHost);
 
                 // Calculate the result
                 float finalDotProduct = 0.0f;
@@ -193,15 +192,25 @@ int main(int argc, char* argv[])
             {
                 // !!! missing !!!
                 // Calculate the dot product with non-pageable memory.
-                cudaMemcpy(gpuOperator2[pass], cpuOperator2[pass], dim * sizeof(float), cudaMemcpyHostToDevice);
-                dotProdKernel <<<blockGrid, threadBlock >>> (gpuResult[pass], gpuOperator1[pass], gpuOperator2[pass], dim);
-                cudaMemcpy(cpuResult[pass], gpuResult[pass], MAX_BLOCKS* MAX_THREADS * sizeof(float), cudaMemcpyDeviceToHost);
+
+                // we first copy the data to the GPU
+                cudaMemcpy(gpuOperator2[pass], cpuOperator2[pass], dim * sizeof(float),
+					cudaMemcpyHostToDevice);
+
+                // we call the kernel
+                dotProdKernel<<<blockGrid, threadBlock>>>(gpuResult[pass], gpuOperator1[pass],
+					gpuOperator2[pass], dim);
+
+                // we download the results
+				cudaMemcpy(cpuResult[pass], gpuResult[pass], MAX_BLOCKS * MAX_THREADS * sizeof(float),
+                    cudaMemcpyDeviceToHost);
+
+                // Calculate the result
                 float finalDotProduct = 0.0f;
                 for (int i = 0; i < MAX_BLOCKS * MAX_THREADS; ++i)
                     finalDotProduct += cpuResult[pass][i];
                 printf("Iteration %d, pass %d: %f\n", iter, pass, finalDotProduct);
             }
-
 
             break;
 
@@ -213,28 +222,37 @@ int main(int argc, char* argv[])
 
             // !!! missing !!!
             // Calculate the dot product with streams.
-            cudaMemcpyAsync(gpuOperator1[0], cpuOperator1[0], dim * sizeof(float), cudaMemcpyHostToDevice, stream[0]);
-            cudaMemcpyAsync(gpuOperator2[0], cpuOperator2[0], dim * sizeof(float), cudaMemcpyHostToDevice, stream[0]);
-            dotProdKernel << <blockGrid, threadBlock >> > (gpuResult[0], gpuOperator1[0], gpuOperator2[0], dim);
-            
-            cudaMemcpyAsync(gpuOperator1[1], cpuOperator1[1], dim * sizeof(float), cudaMemcpyHostToDevice, stream[1]);
-            cudaMemcpyAsync(gpuOperator2[1], cpuOperator2[1], dim * sizeof(float), cudaMemcpyHostToDevice, stream[1]);
-            dotProdKernel << <blockGrid, threadBlock >> > (gpuResult[1], gpuOperator1[1], gpuOperator2[1], dim);
-            
+
+            // we first copy the data to the GPU using cudaMemcpyAsync
+            cudaMemcpyAsync(gpuOperator2[0], cpuOperator2[0], dim * sizeof(float),
+				cudaMemcpyHostToDevice, stream[0]);
+            cudaMemcpyAsync(gpuOperator2[1], cpuOperator2[1], dim * sizeof(float),
+                cudaMemcpyHostToDevice, stream[1]);
+
+            // we call the kernel using the streams
+            dotProdKernel<<<blockGrid, threadBlock, 0, stream[0]>>>(gpuResult[0], gpuOperator1[0],
+				gpuOperator2[0], dim);
+            dotProdKernel<<<blockGrid, threadBlock, 0, stream[1]>>>(gpuResult[1], gpuOperator1[1],
+                gpuOperator2[1], dim);
+
+            // we download the results using cudaMemcpyAsync
+            cudaMemcpyAsync(cpuResult[0], gpuResult[0], MAX_BLOCKS * MAX_THREADS * sizeof(float),
+				cudaMemcpyDeviceToHost, stream[0]);
+            cudaMemcpyAsync(cpuResult[1], gpuResult[1], MAX_BLOCKS * MAX_THREADS * sizeof(float),
+				cudaMemcpyDeviceToHost, stream[1]);
+
+            // we synchronize the streams
             cudaStreamSynchronize(stream[0]);
             cudaStreamSynchronize(stream[1]);
 
-            cudaMemcpy(cpuResult[0], gpuResult[0], MAX_BLOCKS * MAX_THREADS * sizeof(float), cudaMemcpyDeviceToHost);
-            cudaMemcpy(cpuResult[1], gpuResult[1], MAX_BLOCKS * MAX_THREADS * sizeof(float), cudaMemcpyDeviceToHost);
-            float finalDotProduct = 0.0f;
-            for (int i = 0; i < MAX_BLOCKS * MAX_THREADS; ++i)
-            {
-                finalDotProduct += cpuResult[0][i];
-                finalDotProduct += cpuResult[0][i];
-            }
-               
-            printf("Iteration %d: %f\n", iter, finalDotProduct);
-
+            // Calculate the result over two passes
+            for (unsigned int pass = 0; pass < 2; pass++)
+			{
+				float finalDotProduct = 0.0f;
+				for (int i = 0; i < MAX_BLOCKS * MAX_THREADS; ++i)
+					finalDotProduct += cpuResult[pass][i];
+				printf("Iteration %d, pass %d: %f\n", iter, pass, finalDotProduct);
+			}
             break;
 
         } // end switch
@@ -247,10 +265,12 @@ int main(int argc, char* argv[])
 
     // !!! missing !!!
     // cleanup GPU memory
-    cudaFree(gpuOperator1);
-    cudaFree(gpuOperator2);
-    cudaFree(gpuResult);
-
+    for (unsigned int pass = 0; pass < 2; pass++)
+	{
+		cudaFree(gpuOperator1[pass]);
+		cudaFree(gpuOperator2[pass]);
+		cudaFree(gpuResult[pass]);
+	}
 
     // cleanup host memory
     for (unsigned int pass = 0; pass < 2; pass++)
@@ -264,9 +284,10 @@ int main(int argc, char* argv[])
         else // non-pageable memory
         {
             // !!! missing !!!
-            cudaFree(cpuOperator1[pass]);
-            cudaFree(cpuOperator2[pass]);
-            cudaFree(cpuResult[pass]);
+            // Free non-pageable memory
+            cudaFreeHost(cpuOperator1[pass]);
+            cudaFreeHost(cpuOperator2[pass]);
+            cudaFreeHost(cpuResult[pass]);
         }
     }
 
