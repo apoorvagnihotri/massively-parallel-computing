@@ -209,7 +209,7 @@ int main(int argc, char* argv[])
     // memory to device memory
     cudaMemcpy2DToArray(gpuTex1, 0, 0, img3, spitch,
         w * sizeof(float4), h, cudaMemcpyHostToDevice);
-    cudaMemcpy2DToArray(gpuTex1, 0, 0, img3, spitch,
+    cudaMemcpy2DToArray(gpuTex2, 0, 0, img4, spitch,
         w * sizeof(float4), h, cudaMemcpyHostToDevice);
 
     cudaTextureDesc texDesc;
