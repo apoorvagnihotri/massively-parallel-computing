@@ -34,30 +34,132 @@ struct Bucket
 //
 // This kernel must be launched with a 1,1 configuration (1 grid block, 1 thread).
 
-static __global__ void noSortKernel(const Position* inputPositions, int numInputPositions,
-                                    Position* outputPositions, Bucket* outputBuckets)
-{
-    int numBuckets = BucketsPerAxis * BucketsPerAxis;
-
-    // Copy contents of input positions into output positions
-
-    for (int i = 0; i < numInputPositions; ++i)
-        outputPositions[i] = inputPositions[i];
-
-    // Set up the set of buckets to cover the output positions evenly
-
-    for (int i = 0; i < numBuckets; i++)
-    {
-        Bucket& bucket = outputBuckets[i];
-
-        bucket.startIndex = numInputPositions * i / numBuckets;
-        bucket.numElements = (numInputPositions * (i + 1) / numBuckets) - bucket.startIndex;
-    }
-}
+//static __global__ void noSortKernel(const Position* inputPositions, int numInputPositions,
+//                                    Position* outputPositions, Bucket* outputBuckets)
+//{
+//  int numBuckets = BucketsPerAxis * BucketsPerAxis;
+//
+//  // Copy contents of input positions into output positions
+//
+//  for (int i = 0; i < numInputPositions; ++i)
+//      outputPositions[i] = inputPositions[i];
+//
+//  // Set up the set of buckets to cover the output positions evenly
+//
+//  for (int i = 0; i < numBuckets; i++)
+//  {
+//      Bucket& bucket = outputBuckets[i];
+//
+//      bucket.startIndex = numInputPositions * i / numBuckets;
+//      bucket.numElements = (numInputPositions * (i + 1) / numBuckets) - bucket.startIndex;
+//  }
+//}
 
 // !!! missing !!!
 // Kernels needed for sortPositionsIntoBuckets(...)
 
+static __global__ void histogramKernel(const Position* inputPositions, int numInputPositions, int* noOfElementsInBucket, int* placeInRespectiveBucket, int* belongsToBucket)
+{
+    __shared__ int bucketSize;
+    if (threadIdx.x == 0)
+    {
+    	bucketSize = 0;
+    }
+    __syncthreads();
+
+    float lowY = (float)blockIdx.y / gridDim.y;
+    float highY = (float)(blockIdx.y + 1) / gridDim.y;
+
+    float lowX = (float)blockIdx.x / gridDim.x;
+    float highX = (float)(blockIdx.x + 1) / gridDim.x;
+
+
+    for (int i = threadIdx.x; i < numInputPositions; i += blockDim.x)
+    {
+        if (lowX <= inputPositions[i].x && inputPositions[i].x < highX && lowY <= inputPositions[i].y && inputPositions[i].y < highY) // [a,b) -> one can get into multiple buckets if at boundary
+        {
+            placeInRespectiveBucket[i] = atomicAdd(&bucketSize, 1);
+            belongsToBucket[i] = gridDim.x * blockIdx.y + blockIdx.x;
+        }
+    }
+    
+    __syncthreads();
+
+    if (threadIdx.x == 0)
+    {
+        noOfElementsInBucket[gridDim.x * blockIdx.y + blockIdx.x] = bucketSize;
+    }
+
+}
+
+//must be called with 1 block
+static __global__ void prefixSumKernel(int* values, int numValues)
+{
+    extern __shared__ float sharedValues[];
+
+    if (threadIdx.x == 0)
+    {
+        sharedValues[0] = 0;
+    }
+
+    // load a into shared memory
+    for (int i = threadIdx.x; i < numValues; i += blockDim.x)
+    {
+        sharedValues[i + 1] = values[i];
+    }
+
+
+    int stride;
+    for (stride = 1; stride * 2 <= numValues + 1; stride *= 2)
+    {
+        __syncthreads();
+
+        for (int i = numValues - (threadIdx.x * stride * 2) - stride; i > 0; i -= blockDim.x * stride * 2)
+        {
+            sharedValues[i + stride] += sharedValues[i];
+        }
+    }
+
+    for (int b_stride = stride; b_stride  >= 1; b_stride /= 2)
+        {
+            __syncthreads();
+
+            for (int i = numValues - (threadIdx.x * b_stride * 2) - b_stride; i >= b_stride; i -= blockDim.x * b_stride * 2)
+            {
+                sharedValues[i] += sharedValues[i - b_stride];
+            }
+        }
+
+    __syncthreads();
+    // write out memory
+	for (int i = threadIdx.x; i < numValues + 1; i += blockDim.x)
+	{
+		values[i] = sharedValues[i];
+	}
+
+}
+
+static __global__ void sortKernel(const Position* inputPositions, int numInputPositions, int* bucketHistogram, int* placeInRespectiveBucket, int* belongsToBucket, Position* outputPositions, Bucket* outputBuckets)
+{
+    int numBuckets = BucketsPerAxis * BucketsPerAxis;
+
+    unsigned int threadNo = blockDim.x * blockIdx.x + threadIdx.x;
+    unsigned int threadSize = gridDim.x * blockDim.x * blockDim.y;
+
+    for (int i = threadNo; i < numInputPositions; i += threadSize)
+    {
+        outputPositions[bucketHistogram[belongsToBucket[i]] + placeInRespectiveBucket[i]] = inputPositions[i];
+    }
+
+    for (int i = threadNo; i < numBuckets; i += threadSize)
+    {
+        Bucket& bucket = outputBuckets[i];
+
+        bucket.startIndex = bucketHistogram[i];
+        bucket.numElements = bucketHistogram[i + 1] - bucketHistogram[i];
+    }
+
+}
 ///////////////////////////////////////////////////////////////////////////////////////////////
 //
 // Sort a set of positions into a set of buckets
@@ -87,6 +189,8 @@ static void sortPositionsIntoBuckets(CudaArray<Position>& cudaInputPositions,
 
     //=================  Your code here =====================================
     // !!! missing !!!
+    
+
 
     // Instead of sorting, we will now run a dummy kernel that just duplicates the
     //  output positions, and constructs a set of dummy buckets. This is just so that
@@ -97,9 +201,29 @@ static void sortPositionsIntoBuckets(CudaArray<Position>& cudaInputPositions,
     //  proper sort algorithm instead!
 
     //========== Remove this code when you begin to implement your own sorting algorithm ==========
+	CudaArray<int> cudaNoOfElementsInBucket(BucketsPerAxis * BucketsPerAxis + 1);
+	CudaArray<int> cudaPlaceInRespectiveBucket(cudaInputPositions.size());
+	CudaArray<int> cudaBelongsToBucket(cudaInputPositions.size());
 
-    noSortKernel<<<1, 1>>>(cudaInputPositions.cudaArray(), cudaInputPositions.size(),
-                           cudaOutputPositions.cudaArray(), cudaOutputPositionBuckets.cudaArray());
+
+
+
+    int numThreads = 256;
+    dim3 grid = dim3(BucketsPerAxis, BucketsPerAxis);
+    histogramKernel<<<grid, numThreads >>>(cudaInputPositions.cudaArray(), cudaInputPositions.size(), cudaNoOfElementsInBucket.cudaArray(), cudaPlaceInRespectiveBucket.cudaArray(), cudaBelongsToBucket.cudaArray());
+    cudaDeviceSynchronize();
+    prefixSumKernel<<<1,numThreads, (BucketsPerAxis * BucketsPerAxis + 1) * sizeof(int)>>>(cudaNoOfElementsInBucket.cudaArray(), BucketsPerAxis*BucketsPerAxis);
+    cudaDeviceSynchronize();
+    sortKernel << <grid, numThreads  >> > (cudaInputPositions.cudaArray(), cudaInputPositions.size(), cudaNoOfElementsInBucket.cudaArray(), cudaPlaceInRespectiveBucket.cudaArray(), cudaBelongsToBucket.cudaArray(), cudaOutputPositions.cudaArray(), cudaOutputPositionBuckets.cudaArray());
+
+    cudaDeviceSynchronize();
+
+
+    // Copy results back to host memory
+    //std::vector<int> cpuNoOfElementsInBucket;
+    //cpuNoOfElementsInBucket.resize(cudaNoOfElementsInBucket.size());
+    //cudaNoOfElementsInBucket.copyFromCuda(&(*cpuNoOfElementsInBucket.begin()));
+    //printf("a");
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////
