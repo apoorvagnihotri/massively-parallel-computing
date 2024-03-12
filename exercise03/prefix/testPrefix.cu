@@ -14,7 +14,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <device_functions.h>
 #include <cuda_runtime.h>
 #include <iostream>
 #include <string>
@@ -146,103 +145,38 @@ __global__ void featureKernel(int *_dst, cudaTextureObject_t texImg, int _w, int
 // Kernels for Prefix Sum calculation (compaction, spreading, possibly shifting)
 // and for generating the gpuFeatureList from the prefix sum.
 
-__global__ void reductionKernel(int *_dst, int *_src, int _nPix) // called <<((1, 256), (256), THREADS)>>
+__global__ void reductionKernel(int *_dst, int *_src) // called <<((1, 256), (128), THREADS=256)>>
 {
     // get the thread index and the global index
     int tid = threadIdx.x;
-    int index = blockIdx.y * blockDim.x + threadIdx.x;
+    int index1 = blockIdx.y * blockDim.x * 2 + threadIdx.x;
+    int index2 = blockIdx.y * blockDim.x * 2 + threadIdx.x + blockDim.x;
 
     // store the scanline corresponding to the block in shared memory.
     __shared__ int scanline[THREADS];
-    scanline[tid] = _src[index];
+    scanline[tid] = _src[index1];
+    scanline[tid + blockDim.x] = _src[index2];
     __syncthreads();
 
     // do the reduction step
-    for (int s = 1; s < blockDim.x; s *= 2)
+    for (int s = 1; s < blockDim.x * 2; s *= 2)
     {
-        // s is the stride, 1, 2, 4, 8, 16, ...
-        if ((tid + 1) % s == 0 && tid + s < blockDim.x)
+        // tid*2 + s/2 for s = 4 is 3, 7, 11, 15, 19, ...
+        if (tid % s == 0)
         { // the sums happen between s-1, 2s-1, 3s-1, 4s-1, ...
-            scanline[tid] += scanline[tid + s];
+            int op2 = 2 * (tid + s) - 1;
+            int op1 = tid * 2 + s - 1;
+            scanline[op2] += scanline[op1];
         }
         __syncthreads();
     }
 
     // store the result back to global memory
-    if (index < _nPix)
-        _dst[index + 1] = scanline[tid];
+    _dst[index1 + 1] = scanline[tid];
+    _dst[index2 + 1] = scanline[tid + blockDim.x];
 }
 
-__global__ void reductionKernelLast(int *_dst, int *_src, int _nPix) // called <<((1), (256), THREADS)>>
-{
-    // get the thread index and the global index
-    int tid = threadIdx.x;
-    // the last element of every row forms a scanline
-    int index = threadIdx.x * blockDim.x + blockDim.x - 1;
-
-    // store the scanline corresponding to the block in shared memory.
-    __shared__ int scanline[THREADS];
-    scanline[tid] = _src[index];
-    __syncthreads();
-
-    // do the reduction step
-    for (int s = 1; s < blockDim.x; s *= 2)
-    {
-        // s is the stride, 1, 2, 4, 8, 16, ...
-        if ((tid + 1) % s == 0 && tid + s < blockDim.x)
-        { // the sums happen between s-1, 2s-1, 3s-1, 4s-1, ...
-            scanline[tid] += scanline[tid + s];
-        }
-        __syncthreads();
-    }
-
-    if (tid == 0)
-    { // since shiftedPrefixSum by definition has 0 as first element
-        _dst[0] = 0;
-    }
-
-    // store the result back to global memory,
-    if (index < _nPix)
-        _dst[index + 1] = scanline[tid];
-}
-
-__global__ void spreadingKernel(int *_dst, int _nPix) // called <<((1, 256), (128), THREADS)>>
-{
-    // get the thread index and the global index
-    int tid = threadIdx.x;
-    int index1 = blockIdx.y * blockDim.x + threadIdx.x;
-    int index2 = blockIdx.y * blockDim.x + threadIdx.x + blockDim.x;
-
-    // store the scanline corresponding to the block in shared memory.
-    __shared__ int scanline[THREADS];
-    scanline[tid] = _dst[index1];
-    scanline[tid + blockDim.x] = _dst[index2];
-    __syncthreads();
-
-    // do the spreading step
-    // 0, 4
-    // 0, 2 & 4, 6
-    // 0, 1 & 2, 3 & 4, 5 & 6, 7
-    // scanline is 256 everytime, that means, stride starts with 256, then 128, 64, 32, 16, 8, 4, 2, 1
-    // 0, 128,
-    // 0, 64 & 128, 192,
-    // 0, 32 & 64, 96 & 128, 160 & 192, 224,
-    for (int s = blockDim.x * 2; s > 1; s /= 2)
-    {
-        // s is the stride, 256, 128, 64, 32, 16, 8, 4, 2, 1
-        if (tid % s == 0 && tid + s / 2 < blockDim.x * 2)
-        {
-            scanline[tid + s / 2] += scanline[tid];
-        }
-        __syncthreads();
-    }
-
-    // store the result back to global memory
-    _dst[index1] = scanline[tid];
-    _dst[index2] = scanline[tid + blockDim.x];
-}
-
-__global__ void spreadingKernelLast(int *_dst, int _nPix) // called <<((1), (128), THREADS)>>
+__global__ void reductionKernelLast(int *_dst, int *_src) // called <<((1), (128), THREADS)>>
 {
     // get the thread index and the global index
     int tid = threadIdx.x;
@@ -254,17 +188,55 @@ __global__ void spreadingKernelLast(int *_dst, int _nPix) // called <<((1), (128
 
     // store the scanline corresponding to the block in shared memory.
     __shared__ int scanline[THREADS];
+    scanline[tid] = _src[index1];
+    scanline[tid + blockDim.x] = _src[index2];
+    __syncthreads();
+
+    // do the reduction step
+    for (int s = 1; s < blockDim.x * 2; s *= 2)
+    {
+        // s is the stride, 1, 2, 4, 8, 16, ...
+        if (tid % s == 0)
+        { // the sums happen between s-1, 2s-1, 3s-1, 4s-1, ...
+        	int op2 = 2 * (tid + s) - 1;
+        	int op1 = tid * 2 + s - 1;
+            scanline[op2] += scanline[op1];
+        }
+        __syncthreads();
+    }
+
+    if (tid == 0)
+    { // since shiftedPrefixSum by definition has 0 as first element
+        _dst[0] = 0;
+    }
+
+    // store the result back to global memory,
+    _dst[index1 + 1] = scanline[tid];
+    _dst[index2 + 1] = scanline[tid + blockDim.x];
+}
+
+__global__ void spreadingKernel(int *_dst) // called <<((1, 256), (128), THREADS)>>
+{
+    // get the thread index and the global index
+    int tid = threadIdx.x;
+    int index1 = blockIdx.y * blockDim.x * 2 + threadIdx.x;
+    int index2 = blockIdx.y * blockDim.x * 2 + threadIdx.x + blockDim.x;
+
+    // store the scanline corresponding to the block in shared memory.
+    __shared__ int scanline[THREADS];
     scanline[tid] = _dst[index1];
     scanline[tid + blockDim.x] = _dst[index2];
     __syncthreads();
 
     // do the spreading step
-    for (int s = blockDim.x * 2; s > 1; s /= 2)
+    for (int s = blockDim.x; s >= 1; s /= 2)
     {
-        // s is the stride, 256, 128, 64, 32, 16, 8, 4, 2, 1
-        if (tid % s == 0 && tid + s / 2 < blockDim.x * 2)
+        // s is the stride, 128, 64, 32, 16, 8, 4, 2, 1
+        if (tid % s == 0)
         {
-            scanline[tid + s / 2] += scanline[tid];
+            int op2 = 2*tid + s;
+            int op1 = 2*tid;
+            scanline[op2] += scanline[op1];
         }
         __syncthreads();
     }
@@ -272,6 +244,64 @@ __global__ void spreadingKernelLast(int *_dst, int _nPix) // called <<((1), (128
     // store the result back to global memory
     _dst[index1] = scanline[tid];
     _dst[index2] = scanline[tid + blockDim.x];
+}
+
+__global__ void spreadingKernelLast(int *_dst) // called <<((1), (128), THREADS)>>
+{
+    // get the thread index and the global index
+    int tid = threadIdx.x;
+    int scanLineLen = blockDim.x * 2;
+    // 256 (0th row, 1st row, 2nd row, ... 127th row)
+    int index1 = threadIdx.x * scanLineLen + scanLineLen;
+    // ... (256 + 128*256) (128th row, 129th row, 130th row, ... 255th row)
+    int index2 = (threadIdx.x + blockDim.x) * scanLineLen + scanLineLen;
+
+    // store the scanline corresponding to the block in shared memory.
+    __shared__ int scanline[THREADS];
+    if (tid == blockDim.x-1){
+        scanline[tid+1] = _dst[index1];
+    	scanline[0] = 0;
+    }
+    else{
+        scanline[tid+1] = _dst[index1];
+    	scanline[tid + blockDim.x+1] = _dst[index2];
+    }
+
+    __syncthreads();
+
+    // do the spreading step
+    for (int s = blockDim.x; s >= 1; s /= 2)
+    {
+        // s is the stride, 128, 64, 32, 16, 8, 4, 2, 1
+        if (tid % s == 0)
+        {
+            int op2 = 2*tid + s;
+            int op1 = 2*tid;
+            scanline[op2] += scanline[op1];
+        }
+        __syncthreads();
+    }
+
+    // store the result back to global memory
+    if (tid == blockDim.x-1){
+        _dst[index1] = scanline[tid + 1];
+    }
+    else{
+        _dst[index1] = scanline[tid + 1];
+        _dst[index2] = scanline[tid + blockDim.x + 1];
+    }
+}
+
+__global__ void fillFeatureList(int *_dst, int *_src, int *_prefixSum) // called <<((1, 256), (256), THREADS)>>
+{
+    // get the thread index and the global index
+    int index = blockIdx.y * blockDim.x + threadIdx.x;
+
+    // fill the feature list
+    if (_src[index] == 1)
+    {
+        _dst[_prefixSum[index]] = index;
+    }
 }
 
 /* This program detects the local maxima in an image, writes their
@@ -414,40 +444,43 @@ int main(int argc, char *argv[])
         // !!! missing !!!
         // implement the prefixSum algorithm
         // 1. Do the reduction step for all scanlines, one scanline per block.
+
         dim3 gridSize(w / THREADS, h); // 1, 256
-        dim3 blockSize(THREADS);       // 256
+        dim3 blockSize(THREADS / 2);   // 128
+        cudaMemcpy(gpuPrefixSumShifted + 1, gpuFeatureImg, nPix * sizeof(int), cudaMemcpyDeviceToDevice);
         reductionKernel<<<gridSize, blockSize, THREADS * sizeof(int)>>>(
-            gpuFeatureList, gpuFeatureImg, nPix
-        );
+            gpuPrefixSumShifted, gpuPrefixSumShifted + 1);
 
         // 2. Do the reduction step for the last elements of all scanlines, all in one block.
         gridSize = dim3(w / THREADS, 1); // 1, 1
         reductionKernelLast<<<gridSize, blockSize, THREADS * sizeof(int)>>>(
-            gpuFeatureList, gpuFeatureImg, nPix
-        );
+            gpuPrefixSumShifted, gpuPrefixSumShifted + 1);
 
         // 3. Do the spreading step for the last elements of all scanlines, all in one block.
         //    -> The last elements / elements before the scanlines have the right values now.
         blockSize = dim3(THREADS / 2); // 128
-        gridSize = dim3(1, h);         // 1, 256
+        gridSize = dim3(w / THREADS, 1); // 1, 1
         spreadingKernelLast<<<gridSize, blockSize, THREADS * sizeof(int)>>>(
-            gpuFeatureList, nPix
-        );
+            gpuPrefixSumShifted);
 
         // 4. Do the spreading step for all scanlines, one scanline per block.
-        gridSize = dim3(1, h / 2); // 1, 128
+        gridSize = dim3(1, h); // 1, 128
         spreadingKernel<<<gridSize, blockSize, THREADS * sizeof(int)>>>(
-            gpuFeatureList, nPix
-        );
+            gpuPrefixSumShifted);
 
         // !!! missing !!!
         // Make sure that gpuFeatureList is filled according to the CPU implementation
         // and that nFeatures has the correct value!
-        
+
         // extracting the last element from the prefix sum
-        cudaMemcpy(&nFeatures, gpuFeatureList + nPix, sizeof(int), cudaMemcpyDeviceToHost); // Replace index with the index of the value you want to extract
+        cudaMemcpy(&nFeatures, gpuPrefixSumShifted + nPix, sizeof(int), cudaMemcpyDeviceToHost); // Replace index with the index of the value you want to extract
         cout << "nFeatures: " << nFeatures << endl;
-        // upload feature vector
+        // fill gpuFeatureList according to the CPU implementation
+        // kernel that takes in gpuFeatureImg, gpuPrefixSumShifted and gpuFeatureList and fills gpuFeatureList
+        // at the indices suggested by the prefix sum.
+        gridSize = dim3(w / THREADS, h); // 1, 256
+        blockSize = dim3(THREADS);      // 256
+        fillFeatureList<<<gridSize, blockSize>>>(gpuFeatureList, gpuFeatureImg, gpuPrefixSumShifted);
     }
 
     // now compute the Voronoi Diagram around the detected features.
