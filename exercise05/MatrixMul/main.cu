@@ -10,9 +10,9 @@ using namespace std;
 // Simple utility function to check for CUDA runtime errors
 void checkCUDAError(const char* msg);
 
-//#define VERBOSE // Prints input matrix and results. Only uncomment for small matrix sizes!
+#define VERBOSE // Prints input matrix and results. Only uncomment for small matrix sizes!
 #define RUN_CPU // Runs CPU code for reference (slow!!!)
-#define N 1024 // Must be a multiple of THREADS_PER_BLOCK
+#define N 32// Must be a multiple of THREADS_PER_BLOCK
 #define THREADS_PER_BLOCK 16 // per axis -> block has this value squared threads.
 void multiplyMatrix(float* result, const float* a, const float* b, const int n)
 {
@@ -54,6 +54,17 @@ __global__ void multiplyMatrixGpu1(float* result, const float* a, const float* b
 {
     // TODO: Implement a trivial GPU square matrix multiplication.
     // Use one thread per output element.
+	unsigned int threadX = blockDim.x * blockIdx.x + threadIdx.x;
+	unsigned int threadY = blockDim.y * blockIdx.y + threadIdx.y;
+
+	unsigned int threadNo = threadY * n + threadX;
+
+	result[threadNo] = 0;
+	for (int i = 0; i < n; i++)
+	{
+		result[threadNo] += a[threadY * n + i] * b[threadX + i * n];
+	}
+
 }
 
 __global__ void multiplyMatrixGpu2(float* result, const float* a, const float* b, const int n)
@@ -61,6 +72,33 @@ __global__ void multiplyMatrixGpu2(float* result, const float* a, const float* b
     // TODO: Implement a more sophisticated GPU square matrix multiplication.
     // Compute square submatrices per block. Load the common input
     // data of all threads of a block into shared memory cooperatively.
+	__shared__ float As[THREADS_PER_BLOCK][THREADS_PER_BLOCK];
+	// Declaration of the shared memory array Bs used to
+	// store the sub-matrix of B
+	__shared__ float Bs[THREADS_PER_BLOCK][THREADS_PER_BLOCK];
+
+	unsigned int threadX = blockDim.x * blockIdx.x + threadIdx.x;
+	unsigned int threadY = blockDim.y * blockIdx.y + threadIdx.y;
+
+	unsigned int threadNo = threadY * n + threadX;
+
+	result[threadNo] = 0;
+	unsigned int subGridPerAxis =gridDim.x;//= n/gridDim.x;
+	for (int i = 0; i < subGridPerAxis; i++)
+	{
+		Bs[threadIdx.x][threadIdx.y] = b[threadX + i * n * blockDim.y + threadIdx.y * n];
+		As[threadIdx.x][threadIdx.y] = a[threadY * n + threadIdx.x + blockDim.x * i];
+
+		__syncthreads();
+
+		for (int j = 0; j < THREADS_PER_BLOCK; j++)
+			{
+				result[threadNo] += As[j][threadIdx.y] * Bs[threadIdx.x][j];
+			}
+		__syncthreads();
+	}
+
+
 }
 
 int main(int argc, char** argv)
@@ -137,6 +175,7 @@ int main(int argc, char** argv)
     cout << endl;
 #endif
     cout << "GPU advanced time: " << (endTime - startTime) << "ns" << endl;
+
 
     // Free all memory
     cudaFree(gM1);
